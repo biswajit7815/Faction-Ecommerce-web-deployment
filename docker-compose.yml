@@ -1,0 +1,112 @@
+version: '3.8'
+
+services:
+  mongo:
+    image: mongo:6.0
+    container_name: fastion_mongo
+    restart: unless-stopped
+    # 1. Resource Limits (Security & Stability)
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 512M
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - fastion_network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 20s # Thoda fast checking
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fastion_backend
+    restart: unless-stopped
+    # 2. Logging (Debugging ke liye)
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    env_file:
+      - .env
+    # PRODUCTION TIP: Avoid binding whole .env as volume if already in env_file
+    expose:
+      - "4000" # Ensure this matches your server.js port
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - fastion_network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_BACKEND_URL=${VITE_BACKEND_URL}
+    env_file:
+      - .env
+    container_name: fastion_frontend
+    restart: unless-stopped
+    expose:
+      - "80"
+    depends_on:
+      backend:
+        condition: service_healthy # Wait for API to be ready
+    networks:
+      - fastion_network
+
+  admin:
+    build:
+      context: ./admin
+      dockerfile: Dockerfile
+      args:
+        - VITE_BACKEND_URL=${VITE_BACKEND_URL}
+    env_file:
+      - .env
+    container_name: fastion_admin
+    restart: unless-stopped
+    expose:
+      - "80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - fastion_network
+
+  nginx:
+    image: nginx:alpine # 3. Alpine for smaller size
+    container_name: fastion_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - frontend
+      - admin
+      - backend
+    networks:
+      - fastion_network
+
+volumes:
+  mongo_data:
+    name: fastion_mongo_data
+
+networks:
+  fastion_network:
+    name: fastion_network
+    driver: bridge
